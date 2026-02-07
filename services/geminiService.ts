@@ -5,7 +5,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export const planTrip = async (data: TravelFormData): Promise<ParsedResponse> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/generate-plan`, {
+    const response = await fetch(`${API_BASE_URL}/api/plan-trip`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -14,10 +14,9 @@ export const planTrip = async (data: TravelFormData): Promise<ParsedResponse> =>
         destination: data.destination,
         days: data.days,
         budget: data.budget,
-        style: data.personality,
+        personality: data.personality,
         startDate: data.startDate,
-        companions: data.travelers,
-        requirements: ''
+        travelers: data.travelers,
       }),
     });
 
