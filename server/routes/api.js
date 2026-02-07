@@ -183,10 +183,6 @@ router.post('/plan-trip', aiLimiter, validateTripInput, async (req, res) => {
             });
         }
 
-        // Use OpenAI-compatible API (Antigravity Proxy)
-        const API_BASE_URL = process.env.API_BASE_URL || 'http://127.0.0.1:8045/v1';
-        const MODEL = process.env.MODEL || 'gemini-3-flash';
-
         const userPrompt = `
       目的地: ${destination}
       出发日期: ${startDate}
@@ -196,47 +192,97 @@ router.post('/plan-trip', aiLimiter, validateTripInput, async (req, res) => {
       旅游人格/偏好: ${personality || '未指定，请智能推断'}
     `;
 
-        const response = await fetch(`${API_BASE_URL}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`
-            },
-            body: JSON.stringify({
-                model: MODEL,
-                messages: [
-                    { role: 'system', content: SYSTEM_INSTRUCTION },
-                    { role: 'user', content: userPrompt }
-                ],
-                max_tokens: 8192
-            })
-        });
+        let text;
 
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            console.error('API Error:', response.status, errorData);
-            if (response.status === 429) {
-                return res.status(429).json({
-                    error: '服务繁忙，请喝杯水稍后再试',
-                    code: 'RATE_LIMITED'
+        // Check if using proxy mode (API_BASE_URL is set) or Google SDK mode
+        if (process.env.API_BASE_URL) {
+            // Proxy Mode (OpenAI-compatible API like Antigravity Proxy)
+            const API_BASE_URL = process.env.API_BASE_URL;
+            const MODEL = process.env.MODEL || 'gemini-3-flash';
+
+            const response = await fetch(`${API_BASE_URL}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`
+                },
+                body: JSON.stringify({
+                    model: MODEL,
+                    messages: [
+                        { role: 'system', content: SYSTEM_INSTRUCTION },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    max_tokens: 8192
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                console.error('Proxy API Error:', response.status, errorData);
+                if (response.status === 429) {
+                    return res.status(429).json({
+                        error: '服务繁忙，请喝杯水稍后再试',
+                        code: 'RATE_LIMITED'
+                    });
+                }
+                return res.status(500).json({
+                    error: '服务端未返回有效数据，请检查网络状态',
+                    code: 'API_NO_RESPONSE'
                 });
             }
-            return res.status(500).json({
-                error: '服务端未返回有效数据，请检查网络状态',
-                code: 'API_NO_RESPONSE'
+
+            const result = await response.json();
+
+            if (!result.choices || result.choices.length === 0) {
+                return res.status(500).json({
+                    error: '服务端未返回有效数据，请检查网络状态',
+                    code: 'API_NO_RESPONSE'
+                });
+            }
+
+            text = result.choices[0].message?.content;
+        } else {
+            // Google SDK Mode (Production)
+            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+            const model = genAI.getGenerativeModel({
+                model: process.env.MODEL || 'gemini-2.5-flash',
+                systemInstruction: SYSTEM_INSTRUCTION
             });
-        }
 
-        const result = await response.json();
-
-        if (!result.choices || result.choices.length === 0) {
-            return res.status(500).json({
-                error: '服务端未返回有效数据，请检查网络状态',
-                code: 'API_NO_RESPONSE'
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+                generationConfig: {
+                    maxOutputTokens: 8192,
+                }
             });
-        }
 
-        const text = result.choices[0].message?.content;
+            const response = result.response;
+
+            if (!response || !response.candidates || response.candidates.length === 0) {
+                return res.status(500).json({
+                    error: '服务端未返回有效数据，请检查网络状态',
+                    code: 'API_NO_RESPONSE'
+                });
+            }
+
+            const candidate = response.candidates[0];
+
+            if (candidate.finishReason === 'SAFETY') {
+                return res.status(400).json({
+                    error: '您的行程请求触发了安全过滤器，请调整描述后重试',
+                    code: 'SAFETY_BLOCK'
+                });
+            }
+
+            if (candidate.finishReason === 'RECITATION') {
+                return res.status(400).json({
+                    error: '生成内容涉及受限信息，请重试',
+                    code: 'RECITATION_BLOCK'
+                });
+            }
+
+            text = response.text();
+        }
 
         if (!text) {
             return res.status(500).json({
