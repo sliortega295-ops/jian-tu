@@ -183,11 +183,9 @@ router.post('/plan-trip', aiLimiter, validateTripInput, async (req, res) => {
             });
         }
 
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({
-            model: 'gemini-3-flash-preview',
-            systemInstruction: SYSTEM_INSTRUCTION
-        });
+        // Use OpenAI-compatible API (Antigravity Proxy)
+        const API_BASE_URL = process.env.API_BASE_URL || 'http://127.0.0.1:8045/v1';
+        const MODEL = process.env.MODEL || 'gemini-3-flash';
 
         const userPrompt = `
       目的地: ${destination}
@@ -198,39 +196,47 @@ router.post('/plan-trip', aiLimiter, validateTripInput, async (req, res) => {
       旅游人格/偏好: ${personality || '未指定，请智能推断'}
     `;
 
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-            generationConfig: {
-                maxOutputTokens: 8192,
-            }
+        const response = await fetch(`${API_BASE_URL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.GEMINI_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: MODEL,
+                messages: [
+                    { role: 'system', content: SYSTEM_INSTRUCTION },
+                    { role: 'user', content: userPrompt }
+                ],
+                max_tokens: 8192
+            })
         });
 
-        const response = result.response;
-
-        if (!response || !response.candidates || response.candidates.length === 0) {
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            console.error('API Error:', response.status, errorData);
+            if (response.status === 429) {
+                return res.status(429).json({
+                    error: '服务繁忙，请喝杯水稍后再试',
+                    code: 'RATE_LIMITED'
+                });
+            }
             return res.status(500).json({
                 error: '服务端未返回有效数据，请检查网络状态',
                 code: 'API_NO_RESPONSE'
             });
         }
 
-        const candidate = response.candidates[0];
+        const result = await response.json();
 
-        if (candidate.finishReason === 'SAFETY') {
-            return res.status(400).json({
-                error: '您的行程请求触发了安全过滤器，请调整描述后重试',
-                code: 'SAFETY_BLOCK'
+        if (!result.choices || result.choices.length === 0) {
+            return res.status(500).json({
+                error: '服务端未返回有效数据，请检查网络状态',
+                code: 'API_NO_RESPONSE'
             });
         }
 
-        if (candidate.finishReason === 'RECITATION') {
-            return res.status(400).json({
-                error: '生成内容涉及受限信息，请重试',
-                code: 'RECITATION_BLOCK'
-            });
-        }
-
-        const text = response.text();
+        const text = result.choices[0].message?.content;
 
         if (!text) {
             return res.status(500).json({

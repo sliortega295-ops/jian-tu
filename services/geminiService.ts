@@ -1,7 +1,7 @@
 import { TravelFormData, ParsedResponse } from "../types";
 
 // API endpoint - uses backend proxy for security
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '' : 'http://localhost:3001');
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export const planTrip = async (data: TravelFormData): Promise<ParsedResponse> => {
   try {
